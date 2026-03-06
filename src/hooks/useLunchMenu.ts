@@ -1,5 +1,4 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { load } from "@tauri-apps/plugin-store";
 import type { AppSettings, WeeklyMenuCache, DayMenu, Weekday } from "../types";
 import {
   fetchLunchImages,
@@ -7,14 +6,14 @@ import {
   checkLunchMessageTs,
 } from "../services/tauriCommands";
 import { getNowKST, getWeekdayByOffset, isWeekendByOffset } from "../utils/dateUtils";
+import { loadCacheMap, saveCacheMap } from "./lunch/cacheStore";
+import {
+  canNavigateDay,
+  getAvailableDays,
+  getWeekKey,
+} from "./lunch/weekUtils";
 
 type LoadingStatus = "idle" | "fetching" | "analyzing" | "done" | "error";
-
-const CACHE_STORE = "lunch-cache.json";
-const CACHE_MAP_KEY = "menu_cache_map";
-
-/** 주차별 캐시 맵 */
-type CacheMap = Record<string, WeeklyMenuCache>;
 
 export function useLunchMenu(settings: AppSettings) {
   const [cache, setCache] = useState<WeeklyMenuCache | null>(null);
@@ -31,72 +30,10 @@ export function useLunchMenu(settings: AppSettings) {
     cache?.menus.find((m) => m.day === currentDay) ?? null;
   const isWeekendDay = isWeekendByOffset(dayOffset);
 
-  const weekNames = ["", "첫째주", "둘째주", "셋째주", "넷째주", "다섯째주"];
-
-  const getWeekKeyForOffset = (offsetDays: number) => {
-    const now = getNowKST();
-    now.setDate(now.getDate() + offsetDays);
-    const month = now.getMonth() + 1;
-    const weekNum = Math.ceil(now.getDate() / 7);
-    return `${month}월 ${weekNames[weekNum]}`;
-  };
-
-  const getWeekKey = (offsetDays = 0) => getWeekKeyForOffset(offsetDays);
-
   // 메뉴 데이터가 있는 요일 목록
-  const availableDays = cache?.menus.map((m) => m.day) ?? [];
-
-  // < > 네비게이션: 같은 주차 내에서 데이터 있는 요일만 허용
-  const canNavigate = (direction: -1 | 1) => {
-    let testOffset = dayOffset + direction;
-    for (let i = 0; i < 7; i++) {
-      const day = getWeekdayByOffset(testOffset);
-      if (day === "토" || day === "일") {
-        testOffset += direction;
-        continue;
-      }
-      // 주차가 다르면 불가
-      if (cache && getWeekKeyForOffset(testOffset) !== cache.weekKey) {
-        return false;
-      }
-      return availableDays.includes(day as Weekday);
-    }
-    return false;
-  };
-
-  const canGoPrev = canNavigate(-1);
-  const canGoNext = canNavigate(1);
-
-  // 캐시맵 로드
-  const loadCacheMap = async (): Promise<CacheMap> => {
-    try {
-      const store = await load(CACHE_STORE);
-      return (await store.get<CacheMap>(CACHE_MAP_KEY)) ?? {};
-    } catch {
-      return {};
-    }
-  };
-
-  // 캐시맵 저장 (이번 주 + 다음 주만 유지)
-  const saveCacheMap = async (weekKey: string, data: WeeklyMenuCache) => {
-    const store = await load(CACHE_STORE);
-    const map = (await store.get<CacheMap>(CACHE_MAP_KEY)) ?? {};
-    map[weekKey] = data;
-
-    // 이번 주, 다음 주 키만 유지 (나머지 삭제)
-    const thisWeek = getWeekKey();
-    const nextWeek = getWeekKey(7);
-    const validKeys = new Set([thisWeek, nextWeek]);
-    for (const key of Object.keys(map)) {
-      if (!validKeys.has(key)) {
-        delete map[key];
-      }
-    }
-
-    await store.set(CACHE_MAP_KEY, map);
-    await store.save();
-    setCache(data);
-  };
+  const availableDays = getAvailableDays(cache);
+  const canGoPrev = canNavigateDay(dayOffset, -1, cache, availableDays);
+  const canGoNext = canNavigateDay(dayOffset, 1, cache, availableDays);
 
   // 앱 시작 시 현재 주차 캐시 로드
   useEffect(() => {
@@ -109,6 +46,15 @@ export function useLunchMenu(settings: AppSettings) {
         setStatus("done");
       }
     })();
+  }, []);
+
+  const restoreCachedWeek = useCallback(async (weekKey: string): Promise<boolean> => {
+    const map = await loadCacheMap();
+    const saved = map[weekKey];
+    if (!saved) return false;
+    setCache(saved);
+    setStatus("done");
+    return true;
   }, []);
 
   const refresh = useCallback(
@@ -156,10 +102,7 @@ export function useLunchMenu(settings: AppSettings) {
 
         if (images.length === 0) {
           // 검색 결과 없으면 캐시맵에서 현재 주차 캐시 확인
-          const map = await loadCacheMap();
-          if (map[weekKey]) {
-            setCache(map[weekKey]);
-            setStatus("done");
+          if (await restoreCachedWeek(weekKey)) {
             return;
           }
           setError("이번 주 점심 메뉴를 찾지 못했습니다.");
@@ -171,10 +114,7 @@ export function useLunchMenu(settings: AppSettings) {
         const msgText = images[0].message_text;
         if (!msgText.includes(weekKey)) {
           // 다른 주차 데이터 → 현재 주차 캐시가 있으면 유지
-          const map = await loadCacheMap();
-          if (map[weekKey]) {
-            setCache(map[weekKey]);
-            setStatus("done");
+          if (await restoreCachedWeek(weekKey)) {
             return;
           }
           // 캐시도 없으면 에러 표시 (다른 주차 데이터를 보여주지 않음)
@@ -195,15 +135,17 @@ export function useLunchMenu(settings: AppSettings) {
           s.geminiApiKey
         );
         const menus: DayMenu[] = JSON.parse(menuJson);
-
-        await saveCacheMap(weekKey, {
+        const nextCache: WeeklyMenuCache = {
           slackTs: images[0].timestamp,
           cachedAt: getNowKST().toISOString(),
           weekKey,
           menus,
           imageUrl: images[0].url,
           messageText: images[0].message_text,
-        });
+        };
+
+        await saveCacheMap(weekKey, nextCache, [getWeekKey(), getWeekKey(7)]);
+        setCache(nextCache);
 
         setStatus("done");
       } catch (err) {
@@ -211,7 +153,7 @@ export function useLunchMenu(settings: AppSettings) {
         setStatus("error");
       }
     },
-    []
+    [restoreCachedWeek]
   );
 
   const navigateDay = useCallback((direction: -1 | 1) => {

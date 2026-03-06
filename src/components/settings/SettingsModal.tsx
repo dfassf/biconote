@@ -6,7 +6,7 @@ import { THEMES, type ThemeId } from "../../types";
 
 interface Props {
   settings: AppSettings;
-  onSave: (settings: AppSettings) => void;
+  onSave: (settings: AppSettings) => Promise<void>;
   onClose: () => void;
 }
 
@@ -17,6 +17,8 @@ export function SettingsModal({ settings, onSave, onClose }: Props) {
   const [geminiApiKey, setGeminiApiKey] = useState(settings.geminiApiKey);
   const [noteDir, setNoteDir] = useState(settings.noteDir);
   const [theme, setTheme] = useState<ThemeId>(settings.theme);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   const originalTheme = useRef(settings.theme);
 
   // 테마 버튼 누르면 즉시 반영
@@ -45,24 +47,32 @@ export function SettingsModal({ settings, onSave, onClose }: Props) {
   };
 
   const handleSave = async () => {
-    const dir = noteDir.trim() || "biconote";
-    const dirExists = await exists(dir, { baseDir: BaseDirectory.Document });
-    if (!dirExists) {
-      const create = await ask(
-        `"${dir}" 폴더가 존재하지 않습니다. 생성할까요?`,
-        { title: "폴더 없음", kind: "warning" }
-      );
-      if (!create) return;
-      await mkdir(dir, { baseDir: BaseDirectory.Document, recursive: true });
+    setSaveError(null);
+    setIsSaving(true);
+    try {
+      const dir = noteDir.trim() || "biconote";
+      const dirExists = await exists(dir, { baseDir: BaseDirectory.Document });
+      if (!dirExists) {
+        const create = await ask(
+          `"${dir}" 폴더가 존재하지 않습니다. 생성할까요?`,
+          { title: "폴더 없음", kind: "warning" }
+        );
+        if (!create) return;
+        await mkdir(dir, { baseDir: BaseDirectory.Document, recursive: true });
+      }
+      await onSave({
+        slackToken: token.trim(),
+        channelName: channelName.trim(),
+        username: username.trim(),
+        geminiApiKey: geminiApiKey.trim(),
+        noteDir: dir,
+        theme,
+      });
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSaving(false);
     }
-    onSave({
-      slackToken: token.trim(),
-      channelName: channelName.trim(),
-      username: username.trim(),
-      geminiApiKey: geminiApiKey.trim(),
-      noteDir: dir,
-      theme,
-    });
   };
 
   return (
@@ -153,10 +163,11 @@ export function SettingsModal({ settings, onSave, onClose }: Props) {
           <button className="btn-cancel" onClick={handleClose}>
             취소
           </button>
-          <button className="btn-save" onClick={handleSave}>
-            저장
+          <button className="btn-save" onClick={handleSave} disabled={isSaving}>
+            {isSaving ? "저장 중..." : "저장"}
           </button>
         </div>
+        {saveError && <div className="lunch-error">{saveError}</div>}
       </div>
     </div>
   );

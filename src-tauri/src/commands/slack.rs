@@ -2,6 +2,8 @@ use base64::Engine;
 use chrono::{Datelike, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 
+use super::error::CommandError;
+
 const SLACK_USERS_API: &str = "https://slack.com/api/users.list";
 const SLACK_SEARCH_API: &str = "https://slack.com/api/search.messages";
 const KST_OFFSET_SECONDS: i32 = 9 * 3600;
@@ -49,11 +51,12 @@ struct SlackFile {
 
 // ── display name → Slack username 변환 ──
 
-async fn resolve_username(
+async fn resolve_username_with_users_api(
     client: &reqwest::Client,
     token: &str,
     display_name: &str,
-) -> Result<String, String> {
+    users_api_url: &str,
+) -> Result<String, CommandError> {
     if display_name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-')
@@ -69,22 +72,32 @@ async fn resolve_username(
         }
 
         let res = client
-            .get(SLACK_USERS_API)
+            .get(users_api_url)
             .header("Authorization", format!("Bearer {}", token))
             .query(&params)
             .send()
             .await
-            .map_err(|e| format!("users.list 요청 실패: {}", e))?;
+            .map_err(|e| {
+                CommandError::new(
+                    "SLACK_USERS_REQUEST_FAILED",
+                    format!("users.list 요청 실패: {}", e),
+                )
+            })?;
 
-        let data: serde_json::Value = res
-            .json()
-            .await
-            .map_err(|e| format!("users.list 파싱 실패: {}", e))?;
+        let data: serde_json::Value = res.json().await.map_err(|e| {
+            CommandError::new(
+                "SLACK_USERS_PARSE_FAILED",
+                format!("users.list 파싱 실패: {}", e),
+            )
+        })?;
 
         if !data["ok"].as_bool().unwrap_or(false) {
-            return Err(format!(
-                "users.list 오류: {}",
-                data["error"].as_str().unwrap_or("unknown")
+            return Err(CommandError::new(
+                "SLACK_USERS_API_ERROR",
+                format!(
+                    "users.list 오류: {}",
+                    data["error"].as_str().unwrap_or("unknown")
+                ),
             ));
         }
 
@@ -110,6 +123,14 @@ async fn resolve_username(
     }
 
     Ok(display_name.to_string())
+}
+
+async fn resolve_username(
+    client: &reqwest::Client,
+    token: &str,
+    display_name: &str,
+) -> Result<String, CommandError> {
+    resolve_username_with_users_api(client, token, display_name, SLACK_USERS_API).await
 }
 
 fn week_label_by_day(day: u32) -> &'static str {
@@ -146,15 +167,16 @@ fn build_search_query_for_week(slack_username: &str, channel_name: &str, week_ke
     )
 }
 
-async fn search_messages(
+async fn search_messages_with_api(
     client: &reqwest::Client,
     token: &str,
     query: &str,
     count: u8,
-) -> Result<Vec<SearchMatch>, String> {
+    search_api_url: &str,
+) -> Result<Vec<SearchMatch>, CommandError> {
     let count_s = count.to_string();
     let res = client
-        .get(SLACK_SEARCH_API)
+        .get(search_api_url)
         .header("Authorization", format!("Bearer {}", token))
         .query(&[
             ("query", query),
@@ -164,21 +186,37 @@ async fn search_messages(
         ])
         .send()
         .await
-        .map_err(|e| format!("HTTP 요청 실패: {}", e))?;
+        .map_err(|e| {
+            CommandError::new(
+                "SLACK_SEARCH_REQUEST_FAILED",
+                format!("HTTP 요청 실패: {}", e),
+            )
+        })?;
 
-    let data: SearchResponse = res
-        .json()
-        .await
-        .map_err(|e| format!("JSON 파싱 실패: {}", e))?;
+    let data: SearchResponse = res.json().await.map_err(|e| {
+        CommandError::new(
+            "SLACK_SEARCH_PARSE_FAILED",
+            format!("JSON 파싱 실패: {}", e),
+        )
+    })?;
 
     if !data.ok {
-        return Err(format!(
-            "Slack API 오류: {}",
-            data.error.unwrap_or_default()
+        return Err(CommandError::new(
+            "SLACK_SEARCH_API_ERROR",
+            format!("Slack API 오류: {}", data.error.unwrap_or_default()),
         ));
     }
 
     Ok(data.messages.and_then(|m| m.matches).unwrap_or_default())
+}
+
+async fn search_messages(
+    client: &reqwest::Client,
+    token: &str,
+    query: &str,
+    count: u8,
+) -> Result<Vec<SearchMatch>, CommandError> {
+    search_messages_with_api(client, token, query, count, SLACK_SEARCH_API).await
 }
 
 // ── 최신 메시지 ts만 확인 (캐시 유효성 체크용, 경량) ──
@@ -188,7 +226,7 @@ pub async fn check_lunch_message_ts(
     token: String,
     channel_name: String,
     username: String,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, CommandError> {
     let client = reqwest::Client::new();
     let slack_username = resolve_username(&client, &token, &username).await?;
     let week_key = get_current_week_key();
@@ -215,7 +253,7 @@ pub async fn fetch_lunch_images(
     token: String,
     channel_name: String,
     username: String,
-) -> Result<Vec<LunchImage>, String> {
+) -> Result<Vec<LunchImage>, CommandError> {
     let client = reqwest::Client::new();
     let slack_username = resolve_username(&client, &token, &username).await?;
     let query = build_search_query(&slack_username, &channel_name);
