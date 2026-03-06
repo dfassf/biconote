@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::error::CommandError;
+
 const GEMINI_GENERATE_API: &str =
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
@@ -71,9 +73,12 @@ async fn analyze_menu_with_gemini_with_endpoint(
     image_base64: &str,
     api_key: &str,
     endpoint: &str,
-) -> Result<String, String> {
+) -> Result<String, CommandError> {
     if api_key.is_empty() {
-        return Err("Gemini API Key가 설정되지 않았습니다. 설정에서 입력해주세요.".into());
+        return Err(CommandError::new(
+            "GEMINI_API_KEY_MISSING",
+            "Gemini API Key가 설정되지 않았습니다. 설정에서 입력해주세요.",
+        ));
     }
 
     // base64 data URL에서 순수 base64 추출
@@ -108,23 +113,28 @@ async fn analyze_menu_with_gemini_with_endpoint(
 
     let url = format!("{}?key={}", endpoint, api_key);
 
-    let response = client
-        .post(&url)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|e| format!("Gemini API 요청 실패: {}", e))?;
+    let response = client.post(&url).json(&request).send().await.map_err(|e| {
+        CommandError::new(
+            "GEMINI_REQUEST_FAILED",
+            format!("Gemini API 요청 실패: {}", e),
+        )
+    })?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Gemini API 오류 ({}): {}", status, body));
+        return Err(CommandError::new(
+            "GEMINI_API_ERROR",
+            format!("Gemini API 오류 ({}): {}", status, body),
+        ));
     }
 
-    let gemini_res: GeminiResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Gemini 응답 파싱 실패: {}", e))?;
+    let gemini_res: GeminiResponse = response.json().await.map_err(|e| {
+        CommandError::new(
+            "GEMINI_RESPONSE_PARSE_FAILED",
+            format!("Gemini 응답 파싱 실패: {}", e),
+        )
+    })?;
 
     let raw = gemini_res
         .candidates
@@ -141,8 +151,12 @@ async fn analyze_menu_with_gemini_with_endpoint(
     let result = extract_json_array(&raw);
 
     // 유효한 JSON인지 검증
-    serde_json::from_str::<serde_json::Value>(&result)
-        .map_err(|e| format!("Gemini 응답 JSON 파싱 실패: {}. 원본: {}", e, result))?;
+    serde_json::from_str::<serde_json::Value>(&result).map_err(|e| {
+        CommandError::new(
+            "GEMINI_JSON_PARSE_FAILED",
+            format!("Gemini 응답 JSON 파싱 실패: {}. 원본: {}", e, result),
+        )
+    })?;
 
     Ok(result)
 }
@@ -151,7 +165,7 @@ async fn analyze_menu_with_gemini_with_endpoint(
 pub async fn analyze_menu_with_gemini(
     image_base64: String,
     api_key: String,
-) -> Result<String, String> {
+) -> Result<String, CommandError> {
     let client = reqwest::Client::new();
     analyze_menu_with_gemini_with_endpoint(&client, &image_base64, &api_key, GEMINI_GENERATE_API)
         .await

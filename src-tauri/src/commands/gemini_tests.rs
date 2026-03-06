@@ -75,8 +75,9 @@ async fn returns_error_on_non_success_response() {
         .await
         .expect_err("non-success response should return error");
 
-    assert!(err.contains("Gemini API 오류"));
-    assert!(err.contains("internal error"));
+    assert_eq!(err.code, "GEMINI_API_ERROR");
+    assert!(err.message.contains("Gemini API 오류"));
+    assert!(err.message.contains("internal error"));
 }
 
 #[tokio::test]
@@ -108,7 +109,8 @@ async fn returns_error_when_response_is_not_json_array() {
         .await
         .expect_err("non JSON array text should fail validation");
 
-    assert!(err.contains("Gemini 응답 JSON 파싱 실패"));
+    assert_eq!(err.code, "GEMINI_JSON_PARSE_FAILED");
+    assert!(err.message.contains("Gemini 응답 JSON 파싱 실패"));
 }
 
 #[tokio::test]
@@ -119,5 +121,6 @@ async fn rejects_empty_api_key_before_request() {
             .await
             .expect_err("empty api key must fail");
 
-    assert!(err.contains("Gemini API Key가 설정되지 않았습니다"));
+    assert_eq!(err.code, "GEMINI_API_KEY_MISSING");
+    assert!(err.message.contains("Gemini API Key가 설정되지 않았습니다"));
 }

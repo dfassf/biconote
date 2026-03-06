@@ -78,6 +78,28 @@ async fn resolves_display_name_with_mocked_users_api() {
 }
 
 #[tokio::test]
+async fn returns_error_when_users_api_returns_not_ok() {
+    let mut server = Server::new_async().await;
+    let users_api = format!("{}/users.list", server.url());
+    let _mock = server
+        .mock("GET", "/users.list")
+        .match_header("authorization", "Bearer test-token")
+        .match_query(Matcher::UrlEncoded("limit".into(), "200".into()))
+        .with_status(200)
+        .with_body(r#"{"ok":false,"error":"invalid_auth"}"#)
+        .create_async()
+        .await;
+
+    let client = reqwest::Client::new();
+    let err = resolve_username_with_users_api(&client, "test-token", "홍길동", &users_api)
+        .await
+        .expect_err("users.list ok=false should return structured error");
+
+    assert_eq!(err.code, "SLACK_USERS_API_ERROR");
+    assert!(err.message.contains("invalid_auth"));
+}
+
+#[tokio::test]
 async fn parses_search_messages_with_mocked_slack_api() {
     let mut server = Server::new_async().await;
     let search_api = format!("{}/search.messages", server.url());
@@ -144,5 +166,6 @@ async fn returns_error_when_slack_api_returns_not_ok() {
         Err(err) => err,
     };
 
-    assert!(err.contains("invalid_auth"));
+    assert_eq!(err.code, "SLACK_SEARCH_API_ERROR");
+    assert!(err.message.contains("invalid_auth"));
 }
