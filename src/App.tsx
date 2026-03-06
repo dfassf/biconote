@@ -16,16 +16,44 @@ function App() {
     const saved = localStorage.getItem("biconote_fontSize");
     return saved ? Number(saved) : 13;
   });
-  const setFontSize = (updater: number | ((prev: number) => number)) => {
-    _setFontSize((prev) => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
-      localStorage.setItem("biconote_fontSize", String(next));
-      return next;
-    });
-  };
+  const setFontSize = useCallback(
+    (updater: number | ((prev: number) => number)) => {
+      _setFontSize((prev) => {
+        const next = typeof updater === "function" ? updater(prev) : updater;
+        localStorage.setItem("biconote_fontSize", String(next));
+        return next;
+      });
+    },
+    []
+  );
   const { settings, saveSettings, isLoaded } = useSettings();
   const editor = useEditor(settings.noteDir);
   const lunch = useLunchMenu(settings);
+  const {
+    tabs,
+    activeTab,
+    activeTabId,
+    setActiveTabId,
+    openFile,
+    openFileWithContent,
+    updateContent,
+    closeTab,
+    reopenTab,
+    newTab,
+    renameTab,
+  } = editor;
+  const {
+    status,
+    error,
+    todayMenu,
+    cache,
+    dayOffset,
+    isWeekendDay,
+    canGoPrev,
+    canGoNext,
+    refresh,
+    navigateDay,
+  } = lunch;
 
   // 테마 적용 (설정 로드 완료 후 + 변경 시)
   useEffect(() => {
@@ -37,24 +65,23 @@ function App() {
   // 앱 시작 시 토큰이 있으면 자동 로드
   useEffect(() => {
     if (isLoaded && settings.slackToken) {
-      lunch.refresh();
+      void refresh();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoaded]);
+  }, [isLoaded, settings.slackToken, refresh]);
 
   // 날짜 변경 or 앱 재활성화 시 자동 새로고침
   const lastDateRef = useRef(getKSTDateString());
-  useEffect(() => {
-    const checkAndRefresh = () => {
-      const today = getKSTDateString();
-      if (today !== lastDateRef.current) {
-        lastDateRef.current = today;
-        if (settings.slackToken) {
-          lunch.refresh();
-        }
+  const checkAndRefresh = useCallback(() => {
+    const today = getKSTDateString();
+    if (today !== lastDateRef.current) {
+      lastDateRef.current = today;
+      if (settings.slackToken) {
+        void refresh();
       }
-    };
+    }
+  }, [settings.slackToken, refresh]);
 
+  useEffect(() => {
     // 앱이 다시 보일 때 (시스템 재시작, 창 전환 등)
     const onVisibility = () => {
       if (document.visibilityState === "visible") {
@@ -71,24 +98,23 @@ function App() {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", onFocus);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.slackToken]);
+  }, [checkAndRefresh]);
 
-  // 네이티브 메뉴 이벤트 수신
+  const menuActionRef = useRef<(action: string) => void>(() => {});
   useEffect(() => {
-    const unlisten = listen<string>("menu-action", (event) => {
-      switch (event.payload) {
+    menuActionRef.current = (action: string) => {
+      switch (action) {
         case "new_file":
-          editor.newTab();
+          newTab();
           break;
         case "reopen_tab":
-          editor.reopenTab();
+          reopenTab();
           break;
         case "open_file":
-          editor.openFile();
+          void openFile();
           break;
         case "close_tab":
-          editor.closeTab(editor.activeTabId);
+          closeTab(activeTabId);
           break;
         case "zoom_in":
           setFontSize((s) => Math.min(s + 5, 50));
@@ -103,9 +129,33 @@ function App() {
           setShowSettings(true);
           break;
       }
-    });
-    return () => { unlisten.then((f) => f()); };
-  }, [editor]);
+    };
+  }, [activeTabId, closeTab, newTab, openFile, reopenTab, setFontSize]);
+
+  // 네이티브 메뉴 이벤트 수신
+  useEffect(() => {
+    let cleanup: (() => void) | null = null;
+    let isDisposed = false;
+
+    void listen<string>("menu-action", (event) => {
+      menuActionRef.current(event.payload);
+    })
+      .then((unlisten) => {
+        if (isDisposed) {
+          unlisten();
+          return;
+        }
+        cleanup = unlisten;
+      })
+      .catch((err) => {
+        console.error("menu-action listen error:", err);
+      });
+
+    return () => {
+      isDisposed = true;
+      cleanup?.();
+    };
+  }, []);
 
   // 드래그앤드롭
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -130,48 +180,48 @@ function App() {
           // 에디터에서 openFilePath를 사용할 수 없으므로 직접 처리
           // openFilePath는 로컬 파일 시스템 경로가 필요한데, 브라우저 드래그앤드롭은 경로를 제공하지 않음
           // 대신 내용을 직접 읽어서 새 탭으로 추가
-          editor.openFileWithContent(fileName, text);
+          await openFileWithContent(fileName, text);
         }
       }
     },
-    [editor]
+    [openFileWithContent]
   );
 
   return (
     <div className="app" onDragOver={handleDragOver} onDrop={handleDrop}>
       <TitleBar
-        onOpenFile={editor.openFile}
+        onOpenFile={openFile}
         onOpenSettings={() => setShowSettings(true)}
       />
       <div className="main-content">
         <div className="editor-pane">
           <TabBar
-            tabs={editor.tabs}
-            activeTabId={editor.activeTabId}
-            onSelectTab={editor.setActiveTabId}
-            onCloseTab={editor.closeTab}
-            onNewTab={editor.newTab}
-            onRenameTab={editor.renameTab}
+            tabs={tabs}
+            activeTabId={activeTabId}
+            onSelectTab={setActiveTabId}
+            onCloseTab={closeTab}
+            onNewTab={newTab}
+            onRenameTab={renameTab}
           />
           <EditorArea
-            content={editor.activeTab.content}
-            onChange={editor.updateContent}
-            fileName={editor.activeTab.fileName}
+            content={activeTab.content}
+            onChange={updateContent}
+            fileName={activeTab.fileName}
             fontSize={fontSize}
-            tabId={editor.activeTabId}
+            tabId={activeTabId}
           />
         </div>
         <LunchPanel
-          status={lunch.status}
-          error={lunch.error}
-          todayMenu={lunch.todayMenu}
-          cache={lunch.cache}
-          dayOffset={lunch.dayOffset}
-          isWeekendDay={lunch.isWeekendDay}
-          canGoPrev={lunch.canGoPrev}
-          canGoNext={lunch.canGoNext}
-          onRefresh={lunch.refresh}
-          onNavigateDay={lunch.navigateDay}
+          status={status}
+          error={error}
+          todayMenu={todayMenu}
+          cache={cache}
+          dayOffset={dayOffset}
+          isWeekendDay={isWeekendDay}
+          canGoPrev={canGoPrev}
+          canGoNext={canGoNext}
+          onRefresh={refresh}
+          onNavigateDay={navigateDay}
         />
       </div>
 
@@ -181,7 +231,7 @@ function App() {
           onSave={async (s) => {
             await saveSettings(s);
             setShowSettings(false);
-            lunch.refresh(s);
+            await refresh(s);
           }}
           onClose={() => setShowSettings(false)}
         />
