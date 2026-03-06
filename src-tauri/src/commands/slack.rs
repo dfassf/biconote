@@ -2,6 +2,10 @@ use base64::Engine;
 use chrono::{Datelike, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 
+const SLACK_USERS_API: &str = "https://slack.com/api/users.list";
+const SLACK_SEARCH_API: &str = "https://slack.com/api/search.messages";
+const KST_OFFSET_SECONDS: i32 = 9 * 3600;
+
 #[derive(Serialize, Clone)]
 pub struct LunchImage {
     pub url: String,
@@ -65,7 +69,7 @@ async fn resolve_username(
         }
 
         let res = client
-            .get("https://slack.com/api/users.list")
+            .get(SLACK_USERS_API)
             .header("Authorization", format!("Bearer {}", token))
             .query(&params)
             .send()
@@ -108,52 +112,53 @@ async fn resolve_username(
     Ok(display_name.to_string())
 }
 
-// ── KST 현재 주차 키 ("N월 N째주") ──
-
-fn get_current_week_key() -> String {
-    let kst = FixedOffset::east_opt(9 * 3600).unwrap();
-    let now_kst = Utc::now().with_timezone(&kst);
-    let month = now_kst.month();
-    let day = now_kst.day();
-    let week_num = ((day - 1) / 7) + 1;
-    let week_str = match week_num {
+fn week_label_by_day(day: u32) -> &'static str {
+    let week_num = ((day.saturating_sub(1)) / 7) + 1;
+    match week_num {
         1 => "첫째주",
         2 => "둘째주",
         3 => "셋째주",
         4 => "넷째주",
         _ => "다섯째주",
-    };
-    format!("{}월 {}", month, week_str)
+    }
 }
 
-// ── 주차 검색 쿼리 빌드 (공통) ──
+fn build_week_key(month: u32, day: u32) -> String {
+    format!("{}월 {}", month, week_label_by_day(day))
+}
+
+// ── KST 현재 주차 키 ("N월 N째주") ──
+fn get_current_week_key() -> String {
+    let kst = FixedOffset::east_opt(KST_OFFSET_SECONDS).expect("KST offset should be valid");
+    let now_kst = Utc::now().with_timezone(&kst);
+    build_week_key(now_kst.month(), now_kst.day())
+}
 
 fn build_search_query(slack_username: &str, channel_name: &str) -> String {
     let week_key = get_current_week_key();
+    build_search_query_for_week(slack_username, channel_name, &week_key)
+}
+
+fn build_search_query_for_week(slack_username: &str, channel_name: &str, week_key: &str) -> String {
     format!(
         "from:@{} in:{} \"{}\" BICO TABLE",
         slack_username, channel_name, week_key
     )
 }
 
-// ── 최신 메시지 ts만 확인 (캐시 유효성 체크용, 경량) ──
-
-#[tauri::command]
-pub async fn check_lunch_message_ts(
-    token: String,
-    channel_name: String,
-    username: String,
-) -> Result<Option<String>, String> {
-    let client = reqwest::Client::new();
-    let slack_username = resolve_username(&client, &token, &username).await?;
-    let query = build_search_query(&slack_username, &channel_name);
-
+async fn search_messages(
+    client: &reqwest::Client,
+    token: &str,
+    query: &str,
+    count: u8,
+) -> Result<Vec<SearchMatch>, String> {
+    let count_s = count.to_string();
     let res = client
-        .get("https://slack.com/api/search.messages")
+        .get(SLACK_SEARCH_API)
         .header("Authorization", format!("Bearer {}", token))
         .query(&[
-            ("query", query.as_str()),
-            ("count", "1"),
+            ("query", query),
+            ("count", count_s.as_str()),
             ("sort", "timestamp"),
             ("sort_dir", "desc"),
         ])
@@ -173,21 +178,30 @@ pub async fn check_lunch_message_ts(
         ));
     }
 
-    // weekKey가 본문에 포함된 메시지만 유효
-    let week_key = get_current_week_key();
+    Ok(data.messages.and_then(|m| m.matches).unwrap_or_default())
+}
 
-    let ts = data
-        .messages
-        .and_then(|m| m.matches)
-        .and_then(|matches| {
-            matches
-                .into_iter()
-                .find(|msg| {
-                    msg.text
-                        .as_deref()
-                        .map(|t| t.contains(&week_key))
-                        .unwrap_or(false)
-                })
+// ── 최신 메시지 ts만 확인 (캐시 유효성 체크용, 경량) ──
+
+#[tauri::command]
+pub async fn check_lunch_message_ts(
+    token: String,
+    channel_name: String,
+    username: String,
+) -> Result<Option<String>, String> {
+    let client = reqwest::Client::new();
+    let slack_username = resolve_username(&client, &token, &username).await?;
+    let week_key = get_current_week_key();
+    let query = build_search_query(&slack_username, &channel_name);
+    let matches = search_messages(&client, &token, &query, 1).await?;
+
+    let ts = matches
+        .into_iter()
+        .find(|msg| {
+            msg.text
+                .as_deref()
+                .map(|t| t.contains(&week_key))
+                .unwrap_or(false)
         })
         .and_then(|msg| msg.ts);
 
@@ -205,49 +219,18 @@ pub async fn fetch_lunch_images(
     let client = reqwest::Client::new();
     let slack_username = resolve_username(&client, &token, &username).await?;
     let query = build_search_query(&slack_username, &channel_name);
-
-    let res = client
-        .get("https://slack.com/api/search.messages")
-        .header("Authorization", format!("Bearer {}", token))
-        .query(&[
-            ("query", query.as_str()),
-            ("count", "5"),
-            ("sort", "timestamp"),
-            ("sort_dir", "desc"),
-        ])
-        .send()
-        .await
-        .map_err(|e| format!("HTTP 요청 실패: {}", e))?;
-
-    let data: SearchResponse = res
-        .json()
-        .await
-        .map_err(|e| format!("JSON 파싱 실패: {}", e))?;
-
-    if !data.ok {
-        return Err(format!(
-            "Slack API 오류: {}",
-            data.error.unwrap_or_default()
-        ));
-    }
-
-    let mut images = Vec::new();
-
-    let matches = data
-        .messages
-        .and_then(|m| m.matches)
-        .unwrap_or_default();
-
-    // weekKey가 메시지 본문에 포함된 것만 필터 (Slack 퍼지 매칭 방지)
+    let matches = search_messages(&client, &token, &query, 5).await?;
     let week_key = get_current_week_key();
 
-    for msg in &matches {
+    let mut images = Vec::new();
+    for msg in matches {
         // 메시지 본문에 현재 주차 키워드가 없으면 스킵
-        let msg_text = msg.text.as_deref().unwrap_or("");
+        let msg_text = msg.text.unwrap_or_default();
         if !msg_text.contains(&week_key) {
             continue;
         }
-        if let Some(files) = &msg.files {
+        let msg_ts = msg.ts.unwrap_or_default();
+        if let Some(files) = msg.files {
             for file in files {
                 let is_image = file
                     .mimetype
@@ -283,19 +266,22 @@ pub async fn fetch_lunch_images(
                         if let Ok(bytes) = response.bytes().await {
                             if bytes.len() > 100 {
                                 let mime = file.mimetype.as_deref().unwrap_or("image/png");
-                                let b64 =
-                                    base64::engine::general_purpose::STANDARD.encode(&bytes);
+                                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                                 data_url = format!("data:{};base64,{}", mime, b64);
                             }
                         }
                     }
                 }
 
+                if data_url.is_empty() {
+                    continue;
+                }
+
                 images.push(LunchImage {
                     url: data_url,
-                    filename: file.name.clone().unwrap_or_default(),
-                    timestamp: msg.ts.clone().unwrap_or_default(),
-                    message_text: msg.text.clone().unwrap_or_default(),
+                    filename: file.name.unwrap_or_default(),
+                    timestamp: msg_ts.clone(),
+                    message_text: msg_text.clone(),
                 });
             }
         }
@@ -303,3 +289,7 @@ pub async fn fetch_lunch_images(
 
     Ok(images)
 }
+
+#[cfg(test)]
+#[path = "slack_tests.rs"]
+mod slack_tests;

@@ -195,11 +195,10 @@ export function useEditor(noteDir = "biconote") {
       const relPath = notePath(fileName);
       await writeTextFile(relPath, content, { baseDir: BASE });
 
-      let nextActiveId = "";
       setTabs((prev) => {
         const existing = prev.find((t) => t.fileName === fileName);
         if (existing) {
-          nextActiveId = existing.id;
+          setActiveTabId(existing.id);
           return prev.map((t) =>
             t.id === existing.id
               ? { ...t, content, savedContent: content, isModified: false }
@@ -214,12 +213,9 @@ export function useEditor(noteDir = "biconote") {
           savedContent: content,
           isModified: false,
         };
-        nextActiveId = tab.id;
+        setActiveTabId(tab.id);
         return [...prev, tab];
       });
-      if (nextActiveId) {
-        setActiveTabId(nextActiveId);
-      }
     },
     [noteDir]
   );
