@@ -49,10 +49,11 @@ struct SlackFile {
 
 // ── display name → Slack username 변환 ──
 
-async fn resolve_username(
+async fn resolve_username_with_users_api(
     client: &reqwest::Client,
     token: &str,
     display_name: &str,
+    users_api_url: &str,
 ) -> Result<String, String> {
     if display_name
         .chars()
@@ -69,7 +70,7 @@ async fn resolve_username(
         }
 
         let res = client
-            .get(SLACK_USERS_API)
+            .get(users_api_url)
             .header("Authorization", format!("Bearer {}", token))
             .query(&params)
             .send()
@@ -112,6 +113,14 @@ async fn resolve_username(
     Ok(display_name.to_string())
 }
 
+async fn resolve_username(
+    client: &reqwest::Client,
+    token: &str,
+    display_name: &str,
+) -> Result<String, String> {
+    resolve_username_with_users_api(client, token, display_name, SLACK_USERS_API).await
+}
+
 fn week_label_by_day(day: u32) -> &'static str {
     let week_num = ((day.saturating_sub(1)) / 7) + 1;
     match week_num {
@@ -146,15 +155,16 @@ fn build_search_query_for_week(slack_username: &str, channel_name: &str, week_ke
     )
 }
 
-async fn search_messages(
+async fn search_messages_with_api(
     client: &reqwest::Client,
     token: &str,
     query: &str,
     count: u8,
+    search_api_url: &str,
 ) -> Result<Vec<SearchMatch>, String> {
     let count_s = count.to_string();
     let res = client
-        .get(SLACK_SEARCH_API)
+        .get(search_api_url)
         .header("Authorization", format!("Bearer {}", token))
         .query(&[
             ("query", query),
@@ -179,6 +189,15 @@ async fn search_messages(
     }
 
     Ok(data.messages.and_then(|m| m.matches).unwrap_or_default())
+}
+
+async fn search_messages(
+    client: &reqwest::Client,
+    token: &str,
+    query: &str,
+    count: u8,
+) -> Result<Vec<SearchMatch>, String> {
+    search_messages_with_api(client, token, query, count, SLACK_SEARCH_API).await
 }
 
 // ── 최신 메시지 ts만 확인 (캐시 유효성 체크용, 경량) ──
