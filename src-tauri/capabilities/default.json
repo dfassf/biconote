@@ -1,0 +1,25 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for lunchmenu-crawler",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "store:default",
+    "dialog:default",
+    "shell:default",
+    "fs:default",
+    "fs:allow-exists",
+    "fs:allow-mkdir",
+    "fs:allow-read-dir",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOCUMENT/biconote/**" },
+        { "path": "$HOME/**" }
+      ]
+    }
+  ]
+}

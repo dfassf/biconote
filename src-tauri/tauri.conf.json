@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicepkg/gpt-runner/refs/heads/main/packages/gpt-runner-web/src/assets/tauri-conf-v2.json",
+  "productName": "비코노트",
+  "version": "1.0.0",
+  "identifier": "com.biocom.biconote",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "BICONOTE - 점심이 보이는 메모장",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "copyright": "",
+    "shortDescription": "점심이 보이는 메모장",
+    "longDescription": "",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
