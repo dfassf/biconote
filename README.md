@@ -2,6 +2,10 @@
 
 점심이 보이는 메모장
 
+## Download
+
+[비코노트_1.0.0_aarch64.dmg](https://github.com/dfassf/biconote/releases/download/v1.0.0/비코노트_1.0.0_aarch64.dmg)
+
 Sublime Text 스타일을 참고한 데스크톱 메모장 앱입니다.
 Slack 채널에 올라온 주간 식단 이미지를 자동으로 가져와 Gemini Vision으로 OCR 파싱하여, 오늘의 점심/석식 메뉴를 사이드바에 보여줍니다.
 
